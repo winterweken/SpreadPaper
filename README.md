@@ -38,14 +38,19 @@ Perfect for:
 
 🎨 **High Quality** – Renders at native resolution for each display with optimal quality
 
-## Download
+## 📥 Download & Installation
 
-**[Download the latest version](https://github.com/rvanbaalen/SpreadPaper/releases/latest)** (macOS 15+)
+**[Download the latest version](https://github.com/rvanbaalen/SpreadPaper/releases/latest)**
 
-1. Download `SpreadPaper.dmg` from the latest release
-2. Open the DMG and drag SpreadPaper to your Applications folder
-3. Right-click the app and select "Open" (required for first launch on unsigned apps)
-4. Grant necessary permissions when prompted
+Because SpreadPaper is a free, open-source project and not signed with a paid Apple Developer ID ($99/year), macOS Gatekeeper will flag it on the first launch. **This is normal behavior for FOSS apps.**
+
+1. **Download** the `SpreadPaper.dmg` (or `.zip`) from the Releases page.
+2. **Open** the DMG and drag **SpreadPaper** to your **Applications** folder.
+3. **Right-Click** (or Control-Click) the SpreadPaper app icon in your Applications folder.
+4. Select **Open** from the menu.
+5. A dialog will appear saying *"SpreadPaper cannot be opened because the developer cannot be verified"* — Click **Open** in this dialog.
+
+*You only need to do this once. Future launches will work normally.*
 
 ## How to Use
 
