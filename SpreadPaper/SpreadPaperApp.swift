@@ -13,5 +13,9 @@ struct SpreadPaperApp: App {
         WindowGroup {
             ContentView()
         }
+
+        Settings {
+            SettingsView()
+        }
     }
 }
