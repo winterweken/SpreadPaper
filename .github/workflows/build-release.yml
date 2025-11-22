@@ -7,14 +7,11 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-latest  # Uses macOS 15 (Sequoia) with Xcode 16.x as of 2025
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Select Xcode version
-        run: sudo xcode-select -s /Applications/Xcode_15.2.app/Contents/Developer
 
       - name: Build app
         run: |
@@ -27,20 +24,21 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Create DMG
         run: |
-          # Create a temporary directory for DMG contents
-          mkdir -p dmg_temp
-          cp -r build/Build/Products/Release/SpreadPaper.app dmg_temp/
-
-          # Create symlink to Applications folder
-          ln -s /Applications dmg_temp/Applications
-
-          # Create DMG
-          hdiutil create -volname "SpreadPaper" \
-            -srcfolder dmg_temp \
-            -ov -format UDZO \
-            SpreadPaper.dmg
+          create-dmg \
+            --volname "SpreadPaper" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --icon-size 100 \
+            --app-drop-link 450 185 \
+            --no-internet-enable \
+            --skip-jenkins \
+            "SpreadPaper.dmg" \
+            "build/Build/Products/Release/SpreadPaper.app"
 
       - name: Upload DMG to release
         uses: softprops/action-gh-release@v1
