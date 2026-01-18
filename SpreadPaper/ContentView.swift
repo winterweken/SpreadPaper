@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import UniformTypeIdentifiers
 import CoreGraphics
+import AVFoundation
 
 // MARK: - DATA MODELS
 
@@ -79,7 +80,7 @@ class WallpaperManager: ObservableObject {
         return spreadPaperDir
     }
 
-    private func getWallpapersDirectory() -> URL {
+    func getWallpapersDirectory() -> URL {
         let wallpapersDir = getAppDataDirectory().appendingPathComponent("wallpapers")
         if !FileManager.default.fileExists(atPath: wallpapersDir.path) {
             try? FileManager.default.createDirectory(at: wallpapersDir, withIntermediateDirectories: true)
@@ -273,11 +274,14 @@ class WallpaperManager: ObservableObject {
 
 struct ContentView: View {
     @StateObject var manager = WallpaperManager()
+    @StateObject var dynamicManager = DynamicWallpaperManager()
     @StateObject var settings = AppSettings()
     @Environment(\.colorScheme) var colorScheme
 
     @State private var selectedImage: NSImage?
     @State private var currentOriginalUrl: URL?
+    @State private var isDynamicWallpaper = false
+    @State private var currentDynamicFrames: [DynamicFrame] = []
 
     @State private var imageOffset: CGSize = .zero
     @State private var dragStartOffset: CGSize = .zero
@@ -286,13 +290,23 @@ struct ContentView: View {
     @State private var currentPreviewScale: CGFloat = 1.0
     @State private var isFlipped = false
 
+    // System wallpapers (static) discovery
+    struct SystemWallpaperItem: Identifiable, Hashable {
+        let id = UUID()
+        let url: URL
+        var name: String { url.deletingPathExtension().lastPathComponent }
+    }
+    @State private var systemStaticWallpapers: [SystemWallpaperItem] = []
+    @State private var thumbnailCache: [URL: NSImage] = [:]
+
     @State private var selectedPresetID: SavedPreset.ID?
+    @State private var selectedDynamicWallpaperID: UUID?
     @State private var isShowingSaveAlert = false
     @State private var newPresetName = ""
     
     var body: some View {
         NavigationSplitView {
-            List(selection: $selectedPresetID) {
+            List {
                 Section(header: Text("Saved Layouts")) {
                     Button(action: resetEditor) {
                         Label("New Setup", systemImage: "plus")
@@ -301,12 +315,15 @@ struct ContentView: View {
                     .foregroundStyle(.blue)
                     
                     ForEach(manager.presets) { preset in
-                        HStack {
-                            Label(preset.name, systemImage: "photo")
-                                .lineLimit(1)
-                                .truncationMode(.tail)
+                        Button(action: { loadPreset(preset) }) {
+                            HStack {
+                                Label(preset.name, systemImage: "photo")
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
                         }
-                        .tag(preset.id)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(selectedPresetID == preset.id ? .blue : .primary)
                         .contextMenu {
                             Button("Delete", role: .destructive) {
                                 manager.deletePreset(preset)
@@ -318,11 +335,91 @@ struct ContentView: View {
                         for index in indexSet { manager.deletePreset(manager.presets[index]) }
                     }
                 }
+                
+                Section(header: Text("Dynamic Wallpapers")) {
+                    if dynamicManager.systemWallpapers.isEmpty {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text("Scanning...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ForEach(dynamicManager.systemWallpapers) { wallpaper in
+                            Button(action: { loadDynamicWallpaper(wallpaper) }) {
+                                HStack(spacing: 8) {
+                                    // Always show a leading visual: animated preview if possible, otherwise a fallback icon
+                                    if let preview = wallpaper.previewImage {
+                                        Image(nsImage: preview)
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                            .frame(width: 32, height: 32)
+                                            .clipShape(RoundedRectangle(cornerRadius: 4))
+                                    } else {
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 4)
+                                                .fill(.ultraThinMaterial)
+                                            Image(systemName: wallpaper.type == .solar ? "sun.max" : (wallpaper.type == .video ? "video.fill" : "moon.stars"))
+                                                .font(.system(size: 12))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .frame(width: 32, height: 32)
+                                    }
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(wallpaper.name)
+                                            .lineLimit(1)
+                                            .font(.system(size: 12))
+
+                                        HStack(spacing: 4) {
+                                            Image(systemName: wallpaper.type == .solar ? "sun.max.fill" : (wallpaper.type == .video ? "video.fill" : "moon.stars.fill"))
+                                                .font(.system(size: 8))
+                                                .foregroundStyle(.secondary)
+                                            Text("\(wallpaper.frameCount) frames")
+                                                .font(.system(size: 9))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(selectedDynamicWallpaperID == wallpaper.id ? .blue : .primary)
+                        }
+                    }
+                }
+
+                Section(header: Text("Static Wallpapers")) {
+                    if systemStaticWallpapers.isEmpty {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text("Scanning...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        ForEach(systemStaticWallpapers) { item in
+                            Button(action: { loadImage(from: item.url) }) {
+                                HStack(spacing: 8) {
+                                    CachedThumbnailView(url: item.url, cache: $thumbnailCache)
+                                        .frame(width: 32, height: 32)
+                                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                                    Text(item.name)
+                                        .lineLimit(1)
+                                        .font(.system(size: 12))
+                                    Spacer()
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .background(.ultraThinMaterial)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         } detail: {
             ZStack {
                 // Background - Modern gradient
@@ -569,17 +666,11 @@ struct ContentView: View {
                         .buttonStyle(.bordered)
                         .disabled(selectedImage == nil || currentOriginalUrl == nil)
 
-                        Button(action: {
-                            if let img = selectedImage {
-                                manager.setWallpaper(
-                                    originalImage: img,
-                                    imageOffset: imageOffset,
-                                    scale: imageScale,
-                                    previewScale: currentPreviewScale,
-                                    isFlipped: isFlipped
-                                )
+                        Button {
+                            Task {
+                                await applyWallpaper()
                             }
-                        }) {
+                        } label: {
                             Label("Apply Wallpaper", systemImage: "checkmark.circle.fill")
                         }
                         .buttonStyle(.borderedProminent)
@@ -590,6 +681,19 @@ struct ContentView: View {
                     .background(.ultraThinMaterial, in: Capsule())
                     .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.12), radius: 20, x: 0, y: 8)
                     .padding(.bottom, 40)
+                }
+            }
+            .onAppear {
+                if systemStaticWallpapers.isEmpty {
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        scanSystemWallpapers()
+                    }
+                }
+                
+                // Debug: Print discovered dynamic wallpapers
+                print("DEBUG: Found \(dynamicManager.systemWallpapers.count) dynamic wallpapers")
+                for wallpaper in dynamicManager.systemWallpapers {
+                    print("  - \(wallpaper.name) (\(wallpaper.type), \(wallpaper.frameCount) frames)")
                 }
             }
         }
@@ -610,9 +714,7 @@ struct ContentView: View {
                 }
             }
         } message: { Text("Enter a name for this layout configuration.") }
-        .onChange(of: selectedPresetID) { _, newVal in
-            if let id = newVal, let preset = manager.presets.first(where: { $0.id == id }) { loadPreset(preset) }
-        }
+
         .background(WindowAccessor())
         .frame(minWidth: 900, minHeight: 600)
         .preferredColorScheme(settings.colorScheme)
@@ -630,9 +732,38 @@ struct ContentView: View {
         selectedImage = nil
         currentOriginalUrl = nil
         selectedPresetID = nil
+        selectedDynamicWallpaperID = nil
+        isDynamicWallpaper = false
+        currentDynamicFrames = []
         imageOffset = .zero
         imageScale = 1.0
         isFlipped = false
+    }
+    
+    func scanSystemWallpapers() {
+        // Standard macOS wallpaper directories
+        let candidateDirs: [URL] = [
+            URL(fileURLWithPath: "/System/Library/Desktop Pictures", isDirectory: true),
+            URL(fileURLWithPath: "/Library/Desktop Pictures", isDirectory: true)
+        ]
+        let allowedExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "tiff"]
+        var found: Set<SystemWallpaperItem> = []
+
+        for dir in candidateDirs {
+            if let items = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                for url in items {
+                    let ext = url.pathExtension.lowercased()
+                    if allowedExtensions.contains(ext) {
+                        found.insert(SystemWallpaperItem(url: url))
+                    }
+                }
+            }
+        }
+        // Sort by name for stable UI
+        let sorted = found.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        DispatchQueue.main.async {
+            self.systemStaticWallpapers = sorted
+        }
     }
     
     func loadPreset(_ preset: SavedPreset) {
@@ -644,7 +775,158 @@ struct ContentView: View {
                 self.imageOffset = CGSize(width: preset.offsetX, height: preset.offsetY)
                 self.imageScale = preset.scale
                 self.isFlipped = preset.isFlipped
+                self.selectedPresetID = preset.id
+                self.selectedDynamicWallpaperID = nil
+                self.isDynamicWallpaper = false
+                self.currentDynamicFrames = []
             }
+        }
+    }
+    
+    func loadDynamicWallpaper(_ wallpaper: DynamicWallpaperInfo) {
+        let ext = wallpaper.path.pathExtension.lowercased()
+        let isVideo = ["mov", "mp4", "m4v"].contains(ext)
+        
+        if isVideo {
+            // For video wallpapers, we can't show positioning preview
+            // Just use the preview image or generate one asynchronously
+            if let previewImage = wallpaper.previewImage {
+                withAnimation(.spring()) {
+                    self.selectedImage = previewImage
+                    self.currentOriginalUrl = wallpaper.path
+                    self.isDynamicWallpaper = true
+                    self.currentDynamicFrames = []
+                    self.imageOffset = .zero
+                    self.dragStartOffset = .zero
+                    self.imageScale = 1.0
+                    self.selectedPresetID = nil
+                    self.selectedDynamicWallpaperID = wallpaper.id
+                    self.isFlipped = false
+                }
+                
+                print("📹 Loaded video wallpaper: \(wallpaper.name)")
+                print("   Note: Video wallpapers will play full-screen on each display")
+            } else {
+                // Generate preview asynchronously using modern API
+                Task {
+                    let asset = AVURLAsset(url: wallpaper.path)
+                    let generator = AVAssetImageGenerator(asset: asset)
+                    generator.appliesPreferredTrackTransform = true
+                    
+                    do {
+                        let cgImage = try await generator.image(at: .zero).image
+                        let previewImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                        
+                        await MainActor.run {
+                            withAnimation(.spring()) {
+                                self.selectedImage = previewImage
+                                self.currentOriginalUrl = wallpaper.path
+                                self.isDynamicWallpaper = true
+                                self.currentDynamicFrames = []
+                                self.imageOffset = .zero
+                                self.dragStartOffset = .zero
+                                self.imageScale = 1.0
+                                self.selectedPresetID = nil
+                                self.selectedDynamicWallpaperID = wallpaper.id
+                                self.isFlipped = false
+                            }
+                            
+                            print("📹 Loaded video wallpaper: \(wallpaper.name)")
+                            print("   Note: Video wallpapers will play full-screen on each display")
+                        }
+                    } catch {
+                        print("Failed to generate video preview: \(error)")
+                    }
+                }
+            }
+            
+        } else {
+            // For HEIC dynamic wallpapers, extract frames and show positioning
+            let frames = dynamicManager.extractFrames(from: wallpaper.path)
+            
+            guard !frames.isEmpty, let firstFrame = frames.first else {
+                print("Failed to extract frames from dynamic wallpaper")
+                return
+            }
+            
+            // Create NSImage from first frame for preview
+            let nsImage = NSImage(cgImage: firstFrame.image, size: NSSize(width: firstFrame.image.width, height: firstFrame.image.height))
+            
+            // Auto-scale to fit canvas
+            let canvas = manager.totalCanvas
+            var startScale: CGFloat = 1.0
+            
+            if canvas.width > 0 && canvas.height > 0 {
+                let widthRatio = canvas.width / CGFloat(firstFrame.image.width)
+                let heightRatio = canvas.height / CGFloat(firstFrame.image.height)
+                startScale = max(widthRatio, heightRatio)
+            }
+            
+            withAnimation(.spring()) {
+                self.selectedImage = nsImage
+                self.currentOriginalUrl = wallpaper.path
+                self.isDynamicWallpaper = true
+                self.currentDynamicFrames = frames
+                self.imageOffset = .zero
+                self.dragStartOffset = .zero
+                self.imageScale = startScale
+                self.selectedPresetID = nil
+                self.selectedDynamicWallpaperID = wallpaper.id
+                self.isFlipped = false
+            }
+        }
+    }
+    
+    func applyWallpaper() async {
+        if isDynamicWallpaper, let url = currentOriginalUrl {
+            let ext = url.pathExtension.lowercased()
+            
+            // Check if it's a video file
+            if ext == "mov" || ext == "mp4" || ext == "m4v" {
+                // For video wallpapers, crop and position them across screens
+                print("🎥 Applying positioned video wallpaper: \(url.lastPathComponent)")
+                let success = await dynamicManager.applyVideoWallpaper(
+                    sourceURL: url,
+                    screens: manager.connectedScreens,
+                    totalCanvas: manager.totalCanvas,
+                    offset: imageOffset,
+                    scale: imageScale,
+                    previewScale: currentPreviewScale,
+                    isFlipped: isFlipped,
+                    wallpapersDirectory: manager.getWallpapersDirectory()
+                )
+                
+                if success {
+                    print("✅ Video wallpaper applied successfully to all screens")
+                } else {
+                    print("❌ Failed to apply video wallpaper")
+                }
+            } else {
+                // For HEIC dynamic wallpapers, use the full processing pipeline
+                let success = await dynamicManager.applyDynamicWallpaper(
+                    sourceURL: url,
+                    screens: manager.connectedScreens,
+                    totalCanvas: manager.totalCanvas,
+                    offset: imageOffset,
+                    scale: imageScale,
+                    previewScale: currentPreviewScale,
+                    isFlipped: isFlipped,
+                    wallpapersDirectory: manager.getWallpapersDirectory()
+                )
+                
+                if !success {
+                    print("Failed to apply dynamic wallpaper")
+                }
+            }
+        } else if let img = selectedImage {
+            // Apply static wallpaper (existing logic)
+            manager.setWallpaper(
+                originalImage: img,
+                imageOffset: imageOffset,
+                scale: imageScale,
+                previewScale: currentPreviewScale,
+                isFlipped: isFlipped
+            )
         }
     }
     
@@ -947,6 +1229,130 @@ struct WindowDragHandler: NSViewRepresentable {
     class DraggableView: NSView { override var mouseDownCanMoveWindow: Bool { true } }
 }
 
+// MARK: - Cached Thumbnail View
+
+struct CachedThumbnailView: View {
+    let url: URL
+    @Binding var cache: [URL: NSImage]
+    
+    @State private var thumbnail: NSImage?
+    
+    var body: some View {
+        Group {
+            if let thumbnail = thumbnail ?? cache[url] {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                // Placeholder while loading
+                ZStack {
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(.ultraThinMaterial)
+                    ProgressView()
+                        .controlSize(.mini)
+                }
+            }
+        }
+        .onAppear {
+            loadThumbnail()
+        }
+    }
+    
+    private func loadThumbnail() {
+        // Check cache first
+        if let cached = cache[url] {
+            self.thumbnail = cached
+            return
+        }
+        
+        // Load in background
+        DispatchQueue.global(qos: .userInitiated).async {
+            if let image = NSImage(contentsOf: url) {
+                // Create a smaller thumbnail to save memory
+                let thumbnailSize = NSSize(width: 64, height: 64)
+                let thumbnail = NSImage(size: thumbnailSize)
+                thumbnail.lockFocus()
+                image.draw(in: NSRect(origin: .zero, size: thumbnailSize),
+                          from: NSRect(origin: .zero, size: image.size),
+                          operation: .copy,
+                          fraction: 1.0)
+                thumbnail.unlockFocus()
+                
+                DispatchQueue.main.async {
+                    self.thumbnail = thumbnail
+                    self.cache[url] = thumbnail
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Animated Wallpaper Preview
+
+struct AnimatedWallpaperPreview: View {
+    let wallpaperInfo: DynamicWallpaperInfo
+    let dynamicManager: DynamicWallpaperManager
+    
+    @State private var currentFrameIndex = 0
+    @State private var frames: [DynamicFrame] = []
+    @State private var animationTimer: Timer?
+    
+    var body: some View {
+        Group {
+            if !frames.isEmpty {
+                Image(nsImage: NSImage(cgImage: frames[currentFrameIndex].image, size: NSSize(width: frames[currentFrameIndex].image.width, height: frames[currentFrameIndex].image.height)))
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else if let preview = wallpaperInfo.previewImage {
+                Image(nsImage: preview)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
+        }
+        .onAppear {
+            loadFrames()
+        }
+        .onDisappear {
+            // Invalidate timer to prevent memory leaks
+            animationTimer?.invalidate()
+            animationTimer = nil
+        }
+        .onChange(of: frames.count) { _, newCount in
+            if newCount > 1 {
+                startAnimation()
+            }
+        }
+    }
+    
+    private func loadFrames() {
+        // Load frames in background to avoid blocking UI
+        DispatchQueue.global(qos: .userInitiated).async {
+            let extractedFrames = dynamicManager.extractFrames(from: wallpaperInfo.path)
+            DispatchQueue.main.async {
+                self.frames = extractedFrames
+            }
+        }
+    }
+    
+    private func startAnimation() {
+        guard frames.count > 1 else { return }
+        
+        // Invalidate any existing timer
+        animationTimer?.invalidate()
+        
+        // Cycle through frames with timing based on wallpaper type
+        let duration: Double = wallpaperInfo.type == .appearance ? 3.0 : 2.0
+        
+        animationTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: true) { _ in
+            withAnimation(.easeInOut(duration: 0.5)) {
+                currentFrameIndex = (currentFrameIndex + 1) % frames.count
+            }
+        }
+    }
+}
+
+
 #Preview {
     ContentView()
 }
+
